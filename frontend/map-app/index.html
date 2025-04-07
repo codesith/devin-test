@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zip Code Map - Portland/Vancouver Area</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            display: flex;
+            height: 100vh;
+            width: 100%;
+        }
+        #map {
+            flex: 1;
+            height: 100%;
+        }
+        #control-panel {
+            width: 300px;
+            padding: 20px;
+            background-color: #f5f5f5;
+            box-shadow: -2px 0 5px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+            margin-right: 10px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #2196F3;
+        }
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+        .legend {
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            border: 1px solid #000;
+        }
+        .info-section {
+            margin-top: 20px;
+        }
+        h2, h3 {
+            margin-top: 0;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="map"></div>
+        <div id="control-panel">
+            <h2>Map Controls</h2>
+            
+            <div class="toggle-container">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="group-by-zip">
+                    <span class="slider"></span>
+                </label>
+                <span>Group by 3-Digit Zip Code</span>
+            </div>
+            
+            <div class="toggle-container">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="group-by-affinity">
+                    <span class="slider"></span>
+                </label>
+                <span>Group by Affinity Zone</span>
+            </div>
+            
+            <button id="toggle-button">Toggle Zip Code Grouping</button>
+            <button id="affinity-button" style="margin-top: 5px;">Toggle Affinity Zone</button>
+            
+            <div class="legend">
+                <h3>Legend</h3>
+                <div id="legend-content">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ccc;"></div>
+                        <span>Zip Code Areas</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="info-section">
+                <h3>Selected Area Info</h3>
+                <div id="info-content">
+                    Hover over a zip code area to see details.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize the map centered on Portland/Vancouver area
+        const map = L.map('map').setView([45.53, -122.65], 10);
+        
+        // Add OpenStreetMap tile layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+        
+        // Colors for zip code groups - orange for WA, blue for OR
+        const zipGroupColors = {
+            // Washington group
+            '986': '#FF9900', // Orange for Vancouver (WA)
+            // Oregon group
+            '972': '#3366FF'  // Blue for Portland (OR)
+        };
+        
+        // Make polygons transparent but still visible
+        const zipOpacity = 0.5;
+        
+        // Default style for zip code polygons
+        const defaultStyle = {
+            color: '#000',      // Black border
+            weight: 1,          // Border width
+            opacity: 1,         // Border opacity
+            fillColor: '#ccc',  // Default fill color
+            fillOpacity: 0.7    // Fill opacity
+        };
+        
+        // Variable to store the GeoJSON layer
+        let zipLayer;
+        let groupByZip = false;
+        let groupByAffinity = false;
+        
+        // Define affinity zones
+        const affinityZones = {
+            // Affinity Zone 2: Specific Vancouver zip codes and all Portland zip codes
+            2: ['98660', '98661', '98664', '98663', '98683'],
+            // Affinity Zone 1: All other 986xx zip codes will be determined dynamically
+        };
+        
+        // Colors for affinity zones
+        const affinityZoneColors = {
+            1: '#FF9900', // Orange for Affinity Zone 1
+            2: '#3366FF'  // Blue for Affinity Zone 2
+        };
+        
+        // Function to determine which affinity zone a zip code belongs to
+        function getAffinityZone(zipCode) {
+            // Check if it's one of the specific Vancouver zip codes in Affinity Zone 2
+            if (affinityZones[2].includes(zipCode)) {
+                return 2;
+            }
+            
+            // Check if it's a Portland zip code (972xx) - all Portland zip codes are in Affinity Zone 2
+            if (zipCode.startsWith('972')) {
+                return 2;
+            }
+            
+            // All other 986xx zip codes are in Affinity Zone 1
+            if (zipCode.startsWith('986')) {
+                return 1;
+            }
+            
+            // Default fallback
+            return null;
+        }
+        
+        // Function to update the legend based on the toggle state
+        function updateLegend() {
+            const legendContent = document.getElementById('legend-content');
+            
+            if (groupByAffinity && groupByZip) {
+                // When both toggles are on, show a combined legend
+                legendContent.innerHTML = `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #FF9900;"></div>
+                        <span>Washington (Orange)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #3366FF;"></div>
+                        <span>Oregon (Blue)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #00CCAA;"></div>
+                        <span>Overlap - Downtown Vancouver (Greenish Blue)</span>
+                    </div>
+                `;
+            } else if (groupByAffinity) {
+                legendContent.innerHTML = `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: ${affinityZoneColors[1]};"></div>
+                        <span>Affinity Zone 1 (Other Vancouver)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: ${affinityZoneColors[2]};"></div>
+                        <span>Affinity Zone 2 (Portland & Downtown Vancouver)</span>
+                    </div>
+                `;
+            } else if (groupByZip) {
+                legendContent.innerHTML = `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: ${zipGroupColors['986']};"></div>
+                        <span>WA - 986xx (Vancouver)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: ${zipGroupColors['972']};"></div>
+                        <span>OR - 972xx (Portland)</span>
+                    </div>
+                `;
+            } else {
+                legendContent.innerHTML = `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ccc;"></div>
+                        <span>Zip Code Areas</span>
+                    </div>
+                `;
+            }
+        }
+        
+        // Function to show zip code info on mouseover
+        function onZipMouseover(e) {
+            // Handle both polygon and marker mouseovers
+            const feature = e.target.feature || e.target;
+            const properties = feature.properties;
+            const infoContent = document.getElementById('info-content');
+            
+            // Get zip code and city name
+            const zipCode = properties.zip || properties.ZCTA5CE10 || 'N/A';
+            
+            // Extract city name from properties
+            // The GeoJSON data has city names in different properties depending on the source
+            let cityName = 'N/A';
+            if (properties.city) {
+                cityName = properties.city;
+            } else if (properties.NAME) {
+                cityName = properties.NAME;
+            } else if (properties.name) {
+                cityName = properties.name;
+            } else if (properties.PLACENAME) {
+                cityName = properties.PLACENAME;
+            }
+            
+            // Determine city name based on zip code prefix if not available in properties
+            if (cityName === 'N/A') {
+                const zipPrefix = getZipPrefix(zipCode);
+                if (zipPrefix === '980' || zipPrefix === '982') {
+                    cityName = 'Vancouver';
+                } else if (zipPrefix === '986') {
+                    cityName = zipCode.startsWith('9865') ? 'Longview' : 'Kelso';
+                } else if (zipPrefix === '970' || zipPrefix === '971') {
+                    cityName = 'Portland';
+                } else if (zipPrefix === '972') {
+                    cityName = zipCode.startsWith('9725') ? 'Beaverton' : 'Salem';
+                }
+            }
+            
+            infoContent.innerHTML = `
+                <p><strong>Zip Code:</strong> <u>${zipCode}</u></p>
+                <p><strong>City:</strong> <u>${cityName}</u></p>
+                <p><strong>State:</strong> <u>${properties.state}</u></p>
+            `;
+        }
+        
+        // Function to reset info on mouseout
+        function onZipMouseout(e) {
+            document.getElementById('info-content').innerHTML = 'Hover over a zip code area to see details.';
+        }
+        
+        // Function to get the first 3 digits of a zip code
+        function getZipPrefix(zipCode) {
+            // Convert to string and ensure it's at least 3 characters
+            const zipStr = String(zipCode);
+            if (zipStr.length >= 3) {
+                return zipStr.substring(0, 3);
+            }
+            return null;
+        }
+        
+        // Function to apply styles based on toggle state
+        function applyStyles() {
+            if (!zipLayer) return;
+            
+            console.log("Applying styles, groupByZip:", groupByZip, "groupByAffinity:", groupByAffinity);
+            
+            // Store markers by zip code for styling
+            const markers = [];
+            
+            // First collect all markers
+            map.eachLayer(function(layer) {
+                if (layer instanceof L.CircleMarker) {
+                    markers.push(layer);
+                }
+            });
+            
+            // Style polygons
+            zipLayer.eachLayer(function(layer) {
+                // Get zip code from properties
+                const zipCode = layer.feature.properties.zip || layer.feature.properties.ZCTA5CE10 || '';
+                
+                if (groupByAffinity && groupByZip) {
+                    // When both toggles are on, use a combination of styles
+                    const affinityZone = getAffinityZone(zipCode);
+                    const zipPrefix = getZipPrefix(zipCode);
+                    
+                    // Check if it's one of the specific Vancouver zip codes in Affinity Zone 2
+                    const isSpecialVancouver = affinityZones[2].includes(zipCode);
+                    
+                    // Determine if it's in WA or OR based on zip prefix
+                    const isWashington = zipPrefix === '986';
+                    
+                    // Apply color based on state and special case
+                    // Use greenish blue for specific Vancouver zip codes in Affinity Zone 2
+                    let fillColor;
+                    if (isSpecialVancouver) {
+                        fillColor = '#00CCAA'; // Greenish blue for overlap
+                    } else if (isWashington) {
+                        fillColor = '#FF9900'; // Orange for WA
+                    } else {
+                        fillColor = '#3366FF'; // Blue for OR
+                    }
+                    
+                    layer.setStyle({
+                        fillColor: fillColor,
+                        fillOpacity: zipOpacity,
+                        color: '#000',
+                        weight: 1,
+                        opacity: 1
+                    });
+                } else if (groupByAffinity) {
+                    // Get affinity zone
+                    const affinityZone = getAffinityZone(zipCode);
+                    
+                    console.log("Setting style for zip code:", zipCode, "affinity zone:", affinityZone);
+                    
+                    // Apply color based on affinity zone
+                    layer.setStyle({
+                        fillColor: affinityZoneColors[affinityZone] || '#ccc',
+                        fillOpacity: zipOpacity,
+                        color: '#000',
+                        weight: 1,
+                        opacity: 1
+                    });
+                } else if (groupByZip) {
+                    // Get zip prefix
+                    const zipPrefix = getZipPrefix(zipCode);
+                    
+                    console.log("Setting style for zip prefix:", zipPrefix);
+                    
+                    // Apply color based on zip prefix
+                    layer.setStyle({
+                        fillColor: zipGroupColors[zipPrefix] || '#ccc',
+                        fillOpacity: zipOpacity,
+                        color: '#000',
+                        weight: 1,
+                        opacity: 1
+                    });
+                } else {
+                    layer.setStyle(defaultStyle);
+                }
+            });
+            
+            // Style markers
+            markers.forEach(function(marker) {
+                if (marker.feature) {
+                    const zipCode = marker.feature.properties.zip || marker.feature.properties.ZCTA5CE10 || '';
+                    
+                    if (groupByAffinity && groupByZip) {
+                        // When both toggles are on, use a combination of styles
+                        const zipPrefix = getZipPrefix(zipCode);
+                        
+                        // Check if it's one of the specific Vancouver zip codes in Affinity Zone 2
+                        const isSpecialVancouver = affinityZones[2].includes(zipCode);
+                        
+                        // Determine if it's in WA or OR based on zip prefix
+                        const isWashington = zipPrefix === '986';
+                        
+                        // Apply color based on state and special case
+                        let fillColor;
+                        if (isSpecialVancouver) {
+                            fillColor = '#00CCAA'; // Greenish blue for overlap
+                        } else if (isWashington) {
+                            fillColor = '#FF9900'; // Orange for WA
+                        } else {
+                            fillColor = '#3366FF'; // Blue for OR
+                        }
+                        
+                        // Update marker color to match polygon
+                        marker.setStyle({
+                            fillColor: fillColor,
+                            color: '#fff'
+                        });
+                    } else if (groupByAffinity) {
+                        const affinityZone = getAffinityZone(zipCode);
+                        
+                        // Update marker color to match polygon
+                        marker.setStyle({
+                            fillColor: affinityZoneColors[affinityZone] || '#000',
+                            color: '#fff'
+                        });
+                    } else if (groupByZip) {
+                        const zipPrefix = getZipPrefix(zipCode);
+                        
+                        // Update marker color to match polygon
+                        marker.setStyle({
+                            fillColor: zipGroupColors[zipPrefix] || '#000',
+                            color: '#fff'
+                        });
+                    } else {
+                        // Default marker style
+                        marker.setStyle({
+                            fillColor: '#000',
+                            color: '#fff'
+                        });
+                    }
+                }
+            });
+            
+            updateLegend();
+        }
+        
+        // Toggle button click handler for zip code grouping
+        document.getElementById('toggle-button').addEventListener('click', function() {
+            groupByZip = !groupByZip;
+            document.getElementById('group-by-zip').checked = groupByZip;
+            
+            // Both toggles can now be on simultaneously
+            
+            console.log("Toggle button clicked, new state:", groupByZip);
+            applyStyles();
+        });
+        
+        // Toggle button click handler for affinity zone grouping
+        document.getElementById('affinity-button').addEventListener('click', function() {
+            groupByAffinity = !groupByAffinity;
+            document.getElementById('group-by-affinity').checked = groupByAffinity;
+            
+            // Both toggles can now be on simultaneously
+            
+            console.log("Affinity button clicked, new state:", groupByAffinity);
+            applyStyles();
+        });
+        
+        // Checkbox change handler for zip code grouping
+        document.getElementById('group-by-zip').addEventListener('change', function(e) {
+            groupByZip = e.target.checked;
+            
+            // Both toggles can now be on simultaneously
+            
+            console.log("Zip checkbox changed, new state:", groupByZip);
+            applyStyles();
+        });
+        
+        // Checkbox change handler for affinity zone grouping
+        document.getElementById('group-by-affinity').addEventListener('change', function(e) {
+            groupByAffinity = e.target.checked;
+            
+            // Both toggles can now be on simultaneously
+            
+            console.log("Affinity checkbox changed, new state:", groupByAffinity);
+            applyStyles();
+        });
+        
+        // Load WA and OR zip code data
+        Promise.all([
+            fetch('https://raw.githubusercontent.com/OpenDataDE/State-zip-code-GeoJSON/master/wa_washington_zip_codes_geo.min.json').then(resp => resp.json()),
+            fetch('https://raw.githubusercontent.com/OpenDataDE/State-zip-code-GeoJSON/master/or_oregon_zip_codes_geo.min.json').then(resp => resp.json())
+        ]).then(([waData, orData]) => {
+            // Add state property and enhance city data to each feature
+            console.log("WA data features count:", waData.features.length);
+            waData.features.forEach(feature => {
+                feature.properties.state = 'WA';
+                
+                // Add city names for Vancouver zip codes
+                const zip = feature.properties.zip || feature.properties.ZCTA5CE10;
+                if (zip) {
+                    if (zip.startsWith('986')) {
+                        feature.properties.city = 'Vancouver';
+                    }
+                }
+            });
+            
+            console.log("OR data features count:", orData.features.length);
+            orData.features.forEach(feature => {
+                feature.properties.state = 'OR';
+                
+                // Add city names for Portland zip codes
+                const zip = feature.properties.zip || feature.properties.ZCTA5CE10;
+                if (zip) {
+                    if (zip.startsWith('972')) {
+                        feature.properties.city = 'Portland';
+                    }
+                }
+            });
+            
+            console.log("State properties added to features");
+            
+            // Combine datasets
+            const combinedData = {
+                type: 'FeatureCollection',
+                features: [...waData.features, ...orData.features]
+            };
+            
+            // Filter to show Portland/Vancouver area and surrounding cities
+            // Using a wider bounding box to include more surrounding areas
+            const expandedAreaBounds = {
+                north: 46.2,  // North to include Longview/Kelso
+                south: 44.8,  // South to include Salem
+                east: -122.0, // East to include more suburbs
+                west: -123.2  // West to include more suburbs
+            };
+            
+            // First filter by bounding box and zip code prefix
+            const boundedFeatures = combinedData.features.filter(feature => {
+                // Get coordinates
+                const coords = feature.geometry.coordinates[0];
+                if (!coords || coords.length === 0) return false;
+                
+                // Get zip code and check prefix
+                const zipCode = feature.properties.zip || feature.properties.ZCTA5CE10 || '';
+                const zipPrefix = getZipPrefix(zipCode);
+                
+                // Debug output to check zip codes
+                console.log("Checking zip code:", zipCode, "prefix:", zipPrefix, "state:", feature.properties.state);
+                
+                const isValidPrefix = zipPrefix === '972' || zipPrefix === '986';
+                
+                if (!isValidPrefix) return false;
+                
+                // Calculate centroid
+                let sumLat = 0, sumLng = 0;
+                coords.forEach(coord => {
+                    sumLat += coord[1];
+                    sumLng += coord[0];
+                });
+                const avgLat = sumLat / coords.length;
+                const avgLng = sumLng / coords.length;
+                
+                // Check if within bounds
+                const isInBounds = (
+                    avgLat >= expandedAreaBounds.south &&
+                    avgLat <= expandedAreaBounds.north &&
+                    avgLng >= expandedAreaBounds.west &&
+                    avgLng <= expandedAreaBounds.east
+                );
+                
+                return isInBounds;
+            });
+            
+            // Group features by zip prefix to prevent overlaps
+            const zipPrefixGroups = {};
+            
+            // Only include specific zip code prefixes as requested
+            const includedPrefixes = ['986', '972'];
+            
+            boundedFeatures.forEach(feature => {
+                const zipCode = feature.properties.zip || feature.properties.ZCTA5CE10 || '';
+                const zipPrefix = getZipPrefix(zipCode);
+                
+                // Only include features with the specified zip prefixes
+                if (zipPrefix && includedPrefixes.includes(zipPrefix)) {
+                    if (!zipPrefixGroups[zipPrefix]) {
+                        zipPrefixGroups[zipPrefix] = [];
+                    }
+                    zipPrefixGroups[zipPrefix].push(feature);
+                }
+            });
+            
+            // Create filtered features with no overlaps
+            const filteredFeatures = [];
+            
+            // Add features from each zip prefix group
+            Object.keys(zipPrefixGroups).forEach(zipPrefix => {
+                // Add all features from this zip prefix group
+                zipPrefixGroups[zipPrefix].forEach(feature => {
+                    filteredFeatures.push(feature);
+                });
+            });
+            
+            console.log("Filtered features count:", filteredFeatures.length);
+            console.log("WA features in filtered data:", filteredFeatures.filter(f => f.properties.state === 'WA').length);
+            console.log("OR features in filtered data:", filteredFeatures.filter(f => f.properties.state === 'OR').length);
+            
+            // Create GeoJSON layer
+            zipLayer = L.geoJSON({
+                type: 'FeatureCollection',
+                features: filteredFeatures
+            }, {
+                style: defaultStyle,
+                onEachFeature: function(feature, layer) {
+                    // Add mouseover/mouseout events to polygon
+                    layer.on({
+                        mouseover: onZipMouseover,
+                        mouseout: onZipMouseout
+                    });
+                    
+                    // Calculate centroid for the polygon
+                    let centroid;
+                    if (feature.geometry.type === 'Polygon') {
+                        // For simple polygons
+                        const coords = feature.geometry.coordinates[0];
+                        let sumLat = 0;
+                        let sumLng = 0;
+                        for (let i = 0; i < coords.length; i++) {
+                            sumLng += coords[i][0];
+                            sumLat += coords[i][1];
+                        }
+                        centroid = L.latLng(sumLat / coords.length, sumLng / coords.length);
+                    } else if (feature.geometry.type === 'MultiPolygon') {
+                        // For multi-polygons, use the first polygon
+                        const coords = feature.geometry.coordinates[0][0];
+                        let sumLat = 0;
+                        let sumLng = 0;
+                        for (let i = 0; i < coords.length; i++) {
+                            sumLng += coords[i][0];
+                            sumLat += coords[i][1];
+                        }
+                        centroid = L.latLng(sumLat / coords.length, sumLng / coords.length);
+                    }
+                    
+                    // Add marker at centroid if we have a valid centroid
+                    if (centroid) {
+                        const marker = L.circleMarker(centroid, {
+                            radius: 4,
+                            fillColor: '#000',
+                            color: '#fff',
+                            weight: 1,
+                            opacity: 1,
+                            fillOpacity: 1
+                        }).addTo(map);
+                        
+                        // Add mouseover/mouseout events to marker
+                        marker.feature = feature; // Attach feature to marker
+                        marker.on({
+                            mouseover: onZipMouseover,
+                            mouseout: onZipMouseout
+                        });
+                    }
+                }
+            }).addTo(map);
+            
+            // Fit map to bounds
+            map.fitBounds(zipLayer.getBounds());
+            
+            // Initialize legend
+            updateLegend();
+        }).catch(error => {
+            console.error('Error loading zip code data:', error);
+            document.getElementById('info-content').innerHTML = 
+                '<p class="error">Error loading zip code data. Please try again later.</p>';
+        });
+    </script>
+</body>
+</html>
